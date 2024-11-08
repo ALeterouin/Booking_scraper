@@ -40,6 +40,9 @@ Vous pouvez installer les dépendances en utilisant le fichier `requirements.txt
 
    ```bash
    git clone https://github.com/ALeterouin/Booking_scraper.git
+   ```
+   
+   ```bash
    cd Booking_scraper
    ```
 
