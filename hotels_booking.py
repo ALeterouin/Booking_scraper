@@ -2,180 +2,186 @@ import tkinter as tk
 from tkinter import messagebox
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
-from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import pandas as pd
 import time
 import re
 from geopy.distance import geodesic
 
-def extract_hotels(driver):
-    hotels_list = []
-    previous_count = 0
-    current_count = 0
-    max_scroll_attempts = 5
-    scroll_attempts = 0
+# Path to your ChromeDriver
+CHROMEDRIVER_PATH = "/Users/mac/booking_scraper/chromedriver-mac-arm64/chromedriver"
 
-    while scroll_attempts < max_scroll_attempts:
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(2)
+def create_driver():
+    # Create and configure Chrome WebDriver
+    options = webdriver.ChromeOptions()
+    # Uncomment below line to run in headless mode
+    # options.add_argument("--headless=new")
+    prefs = {
+        "profile.managed_default_content_settings.images": 2  # disable images for faster loading
+    }
+    options.add_experimental_option("prefs", prefs)
+    service = ChromeService(executable_path=CHROMEDRIVER_PATH)
+    return webdriver.Chrome(service=service, options=options)
 
-        hotels = driver.find_elements("xpath", '//div[@data-testid="property-card"]')
+def scroll_until_all_hotels_loaded(driver, max_wait_time=60):
+    # Slowly scroll down until all hotels are loaded or timeout is reached
+    SCROLL_PAUSE_TIME = 2.5
+    last_count = 0
+    start_time = time.time()
+
+    while True:
+        driver.execute_script("window.scrollBy(0, 2000);")
+        time.sleep(SCROLL_PAUSE_TIME)
+
+        hotels = driver.find_elements(By.XPATH, '//div[@data-testid="property-card"]')
         current_count = len(hotels)
-        print(f'Nombre d\'hôtels chargés : {current_count}.')
+        print(f"Visible hotels: {current_count}")
 
-        if current_count > previous_count:
-            previous_count = current_count
-            scroll_attempts = 0
+        if current_count > last_count:
+            last_count = current_count
+            start_time = time.time()  # reset timer
         else:
-            scroll_attempts += 1
+            if time.time() - start_time > max_wait_time:
+                print("⏹️ Stop scrolling: no new hotels after 60 seconds.")
+                break
 
-        if scroll_attempts >= max_scroll_attempts:
-            break
+    return hotels
+
+def extract_hotels(driver):
+    # Extract main hotel info from listing page
+    hotels = scroll_until_all_hotels_loaded(driver)
+    hotel_list = []
 
     for hotel in hotels:
-        hotel_dict = {}
-        try:
-            hotel_dict['hotel'] = hotel.find_element("xpath", './/div[@data-testid="title"]').text
-        except Exception:
-            hotel_dict['hotel'] = 'N/A'
+        data = {}
 
         try:
-            stars_count = len(hotel.find_elements("xpath", './/div[@data-testid="rating-stars"]/span'))
-            hotel_dict['Étoiles'] = stars_count
-        except Exception:
-            hotel_dict['Étoiles'] = 'N/A'
+            data['Hotel Name'] = hotel.find_element(By.XPATH, './/div[@data-testid="title"]').text
+        except:
+            data['Hotel Name'] = 'N/A'
 
         try:
-            price_text = hotel.find_element("xpath", './/span[@data-testid="price-and-discounted-price"]').text
-            price_value = re.sub(r'[^\d,]', '', price_text).replace(',', '.')
-            hotel_dict['Prix'] = float(price_value) if price_value else 'N/A'
-        except Exception:
-            hotel_dict['Prix'] = 'N/A'
+            stars = len(hotel.find_elements(By.XPATH, './/div[@data-testid="rating-stars"]/span'))
+            data['Stars'] = stars
+        except:
+            data['Stars'] = 'N/A'
 
         try:
-            note_text = hotel.find_element("xpath", './/div[@data-testid="review-score"]/div[1]').text.strip()
-            hotel_dict['Note /10'] = float(note_text.split()[-1].replace(',', '.'))
-        except Exception:
-            hotel_dict['Note /10'] = 'N/A'
+            price = hotel.find_element(By.XPATH, './/span[@data-testid="price-and-discounted-price"]').text
+            price_clean = re.sub(r'[^\d,]', '', price).replace(',', '.')
+            data['Price'] = float(price_clean) if price_clean else 'N/A'
+        except:
+            data['Price'] = 'N/A'
 
-        # Extraire le lien de l'hôtel
         try:
-            hotel_link = hotel.find_element("xpath", './/a[@data-testid="title-link"]').get_attribute('href')
-            hotel_dict['Lien'] = hotel_link if hotel_link else 'N/A'
-        except Exception:
-            hotel_dict['Lien'] = 'N/A'
+            note_elem = hotel.find_element(By.XPATH, './/div[contains(@class, "f63b14ab7a")]')
+            note = note_elem.text.strip()
+            data['Review Score (/10)'] = float(note.replace(',', '.'))
+        except:
+            data['Review Score (/10)'] = 'N/A'
 
-        hotels_list.append(hotel_dict)
+        try:
+            link = hotel.find_element(By.XPATH, './/a[@data-testid="title-link"]').get_attribute("href")
+            data['Hotel URL'] = link
+        except:
+            data['Hotel URL'] = 'N/A'
 
-    return hotels_list
+        hotel_list.append(data)
 
-def fetch_details(driver, hotel_link):
-    driver.get(hotel_link)
-    time.sleep(5)
-    
-    # Récupérer la latitude et la longitude
+    return hotel_list
+
+def fetch_details(driver, url):
+    # Visit individual hotel page to fetch coordinates
+    driver.get(url)
     try:
-        latlng = driver.find_element("xpath", './/a[@data-atlas-latlng]').get_attribute("data-atlas-latlng")
-        if latlng:
-            latitude, longitude = map(float, latlng.split(','))
-        else:
-            latitude, longitude = None, None
-    except Exception:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "map_trigger_header_pin"))
+        )
+        latlng_element = driver.find_element(By.ID, "map_trigger_header_pin")
+        latlng = latlng_element.get_attribute("data-atlas-latlng")
+        latitude, longitude = map(float, latlng.split(',')) if latlng else (None, None)
+    except:
         latitude, longitude = None, None
 
-    # Récupérer l'adresse de l'hôtel
-    try:
-        address_element = driver.find_element("xpath", '//span[contains(@class, "hp_address_subtitle")]')
-        address = address_element.get_attribute("textContent").strip()  # Récupérer le texte pur de l'adresse
-    except Exception:
-        address = 'Adresse non disponible'
-    
-    return latitude, longitude, address
+    return latitude, longitude, 'Address not available'
 
 def calculate_distance(hotel_coords, event_coords):
+    # Compute distance to event coordinates (in kilometers)
     try:
-        distance_km = geodesic(hotel_coords, event_coords).kilometers
-        return round(distance_km, 2)
-    except Exception as e:
-        print(f"Erreur lors du calcul de la distance : {e}")
-        return 'Erreur de calcul'
+        return round(geodesic(hotel_coords, event_coords).kilometers, 2)
+    except:
+        return 'Error'
 
-def run_scraping(destination, checkin_date, checkout_date):
-    event_coords = (36.74196135173365, 15.11610252956532)  # Coordonnées de l'événement
-    page_url = f'https://www.booking.com/searchresults.fr.html?ss={destination}&checkin={checkin_date}&checkout={checkout_date}&group_adults=2&no_rooms=1&group_children=0&nflt=ht_id%3D204'
+def run_scraping(destination, checkin, checkout):
+    # Main scraping logic
+    driver = create_driver()
+    event_coords = (36.74196135173365, 15.11610252956532)  # Replace with your own event coordinates
 
-    options = webdriver.ChromeOptions()
-    service = ChromeService(executable_path=ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
+    url = f'https://www.booking.com/searchresults.fr.html?ss={destination}&checkin={checkin}&checkout={checkout}&group_adults=2&no_rooms=1&group_children=0&nflt=ht_id%3D204'
+    driver.get(url)
 
-    driver.get(page_url)
-    time.sleep(5)
+    WebDriverWait(driver, 15).until(
+        EC.presence_of_element_located((By.XPATH, '//div[@data-testid="property-card"]'))
+    )
 
-    hotels_list = extract_hotels(driver)
+    hotels = extract_hotels(driver)
+    print(f"\n{len(hotels)} hotels found in {destination}.\n")
 
-    for hotel in hotels_list:
-        hotel_link = hotel.get('Lien')
-        if hotel_link and hotel_link != 'N/A':
-            hotel_coords = fetch_details(driver, hotel_link)
-            latitude, longitude, address = hotel_coords
-            
-            if all(coord is not None for coord in (latitude, longitude)):  # Vérifiez si les coordonnées sont valides
-                distance = calculate_distance((latitude, longitude), event_coords)
-                hotel['Latitude'] = latitude
-                hotel['Longitude'] = longitude
-                hotel['Adresse'] = address
-                hotel['Distance de l\'événement en Km'] = distance
+    for idx, hotel in enumerate(hotels):
+        print(f"Processing {idx+1}/{len(hotels)}: {hotel['Hotel Name']}")
+        if hotel['Hotel URL'] != 'N/A':
+            lat, lon, address = fetch_details(driver, hotel['Hotel URL'])
+            hotel['Latitude'] = lat if lat else 'N/A'
+            hotel['Longitude'] = lon if lon else 'N/A'
+            hotel['Address'] = address
+            if lat and lon:
+                hotel['Distance to Event (Km)'] = calculate_distance((lat, lon), event_coords)
             else:
-                hotel['Distance de l\'événement en Km'] = 'Coordonnées non disponibles'
-                hotel['Latitude'] = 'N/A'
-                hotel['Longitude'] = 'N/A'
-                hotel['Adresse'] = address
+                hotel['Distance to Event (Km)'] = 'Coordinates not available'
         else:
-            hotel['Distance de l\'événement en Km'] = 'N/A'
-            hotel['Latitude'] = 'N/A'
-            hotel['Longitude'] = 'N/A'
-            hotel['Adresse'] = 'N/A'
+            hotel['Latitude'] = hotel['Longitude'] = hotel['Address'] = hotel['Distance to Event (Km)'] = 'N/A'
 
-    df = pd.DataFrame(hotels_list)
-    file_name = f'Hotels - {destination} - {checkin_date} - {checkout_date}.xlsx'
-    df.to_excel(file_name, index=False)
-
+    df = pd.DataFrame(hotels)
+    filename = f'Hotels - {destination} - {checkin} - {checkout}.xlsx'
+    df.to_excel(filename, index=False)
     driver.quit()
 
-    return len(hotels_list), file_name
+    return len(hotels), filename
 
+# Tkinter GUI interface
 def on_submit():
     destination = entry_destination.get()
-    checkin_date = entry_checkin.get()
-    checkout_date = entry_checkout.get()
+    checkin = entry_checkin.get()
+    checkout = entry_checkout.get()
 
-    if not destination or not checkin_date or not checkout_date:
-        messagebox.showerror("Erreur", "Veuillez remplir tous les champs.")
+    if not all([destination, checkin, checkout]):
+        messagebox.showerror("Error", "Please fill in all fields.")
         return
 
     try:
-        num_hotels, file_name = run_scraping(destination, checkin_date, checkout_date)
-        messagebox.showinfo("Résultat", f'Nombre total d\'hôtels récupérés : {num_hotels}.\nLes résultats ont été enregistrés sous : {file_name}.')
+        count, file = run_scraping(destination, checkin, checkout)
+        messagebox.showinfo("Done", f"{count} hotels retrieved.\nSaved file: {file}")
     except Exception as e:
-        messagebox.showerror("Erreur", str(e))
+        messagebox.showerror("Error", str(e))
 
-# Configuration de l'interface graphique
+# GUI layout
 root = tk.Tk()
-root.title("Scraping d'Hôtels")
+root.title("Booking Hotel Scraper")
 
-tk.Label(root, text="Destination :").pack(pady=5)
+tk.Label(root, text="Destination:").pack()
 entry_destination = tk.Entry(root)
-entry_destination.pack(pady=5)
+entry_destination.pack()
 
-tk.Label(root, text="Date d'arrivée (YYYY-MM-DD) :").pack(pady=5)
+tk.Label(root, text="Check-in (YYYY-MM-DD):").pack()
 entry_checkin = tk.Entry(root)
-entry_checkin.pack(pady=5)
+entry_checkin.pack()
 
-tk.Label(root, text="Date de départ (YYYY-MM-DD) :").pack(pady=5)
+tk.Label(root, text="Check-out (YYYY-MM-DD):").pack()
 entry_checkout = tk.Entry(root)
-entry_checkout.pack(pady=5)
+entry_checkout.pack()
 
-submit_button = tk.Button(root, text="Lancer le Scraping", command=on_submit)
-submit_button.pack(pady=20)
+tk.Button(root, text="Start Scraping", command=on_submit).pack(pady=10)
 
 root.mainloop()
