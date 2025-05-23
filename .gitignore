@@ -3,3 +3,4 @@ venv/
 *.xlsx
 ~
 chromedriver-mac-arm64/
+venv/
