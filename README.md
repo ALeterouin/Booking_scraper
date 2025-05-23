@@ -49,6 +49,9 @@ booking_scraper/
 
    ```bash
    git clone https://github.com/ALeterouin/Booking_scraper.git
+   ```
+   
+   ```bash
    cd Booking_scraper
    ```
 
@@ -120,3 +123,7 @@ Developed by [ALeterouin](https://github.com/ALeterouin)
 
 Free to use and modify
 
+<<<<<<< HEAD:ReadME
+=======
+Cela devrait fournir toutes les informations nécessaires aux utilisateurs pour comprendre, installer et exécuter votre projet !
+>>>>>>> 0983c147ee08a4ed2b219d6fdd7f40e34f660ba9:README.md
